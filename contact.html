@@ -1,0 +1,249 @@
+<?php
+/**
+ * ARMAX - Mods API
+ * Get, Create, Update, Delete Mods
+ */
+
+require_once 'config.php';
+
+$method = $_SERVER['REQUEST_METHOD'];
+$conn = getDBConnection();
+
+switch ($method) {
+    case 'GET':
+        // Get single mod or list
+        if (isset($_GET['id'])) {
+            $id = intval($_GET['id']);
+            $stmt = $conn->prepare("SELECT * FROM mods WHERE id = ?");
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $mod = $result->fetch_assoc();
+            
+            if ($mod) {
+                // Parse images JSON
+                if ($mod['images']) {
+                    $mod['images'] = json_decode($mod['images'], true);
+                }
+                sendResponse(['success' => true, 'data' => $mod]);
+            } else {
+                sendError('Mod not found', 404);
+            }
+        } else {
+            // List mods with filters
+            $where = ["1=1"];
+            $params = [];
+            $types = "";
+            
+            if (isset($_GET['category']) && in_array($_GET['category'], ['vehicle', 'map', 'script', 'skin', 'weapon', 'misc'])) {
+                $where[] = "category = ?";
+                $params[] = $_GET['category'];
+                $types .= "s";
+            }
+            
+            if (isset($_GET['type']) && in_array($_GET['type'], ['free', 'paid'])) {
+                $where[] = "type = ?";
+                $params[] = $_GET['type'];
+                $types .= "s";
+            }
+            
+            if (isset($_GET['featured'])) {
+                $where[] = "is_featured = 1";
+            }
+            
+            if (isset($_GET['search'])) {
+                $search = "%" . $_GET['search'] . "%";
+                $where[] = "(name LIKE ? OR description LIKE ? OR author LIKE ?)";
+                $params[] = $search;
+                $params[] = $search;
+                $params[] = $search;
+                $types .= "sss";
+            }
+            
+            $orderBy = "downloads DESC, rating DESC";
+            if (isset($_GET['sort'])) {
+                switch ($_GET['sort']) {
+                    case 'newest':
+                        $orderBy = "created_at DESC";
+                        break;
+                    case 'rating':
+                        $orderBy = "rating DESC";
+                        break;
+                    case 'downloads':
+                        $orderBy = "downloads DESC";
+                        break;
+                    case 'price':
+                        $orderBy = "price ASC";
+                        break;
+                }
+            }
+            
+            $limit = isset($_GET['limit']) ? intval($_GET['limit']) : 20;
+            $offset = isset($_GET['offset']) ? intval($_GET['offset']) : 0;
+            
+            $sql = "SELECT * FROM mods WHERE " . implode(" AND ", $where) . " ORDER BY $orderBy LIMIT ? OFFSET ?";
+            $params[] = $limit;
+            $params[] = $offset;
+            $types .= "ii";
+            
+            $stmt = $conn->prepare($sql);
+            if (!empty($params)) {
+                $stmt->bind_param($types, ...$params);
+            }
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $mods = $result->fetch_all(MYSQLI_ASSOC);
+            
+            // Parse images JSON for each mod
+            foreach ($mods as &$mod) {
+                if ($mod['images']) {
+                    $mod['images'] = json_decode($mod['images'], true);
+                }
+            }
+            
+            // Get total count
+            $countSql = "SELECT COUNT(*) as total FROM mods WHERE " . implode(" AND ", array_slice($where, 0, -2));
+            $countStmt = $conn->prepare($countSql);
+            if (!empty(array_slice($params, 0, -2))) {
+                $countStmt->bind_param(substr($types, 0, -2), ...array_slice($params, 0, -2));
+            }
+            $countStmt->execute();
+            $countResult = $countStmt->get_result();
+            $total = $countResult->fetch_assoc()['total'];
+            
+            sendResponse([
+                'success' => true,
+                'data' => $mods,
+                'pagination' => [
+                    'total' => $total,
+                    'limit' => $limit,
+                    'offset' => $offset
+                ]
+            ]);
+        }
+        break;
+        
+    case 'POST':
+        // Create new mod
+        $data = json_decode(file_get_contents('php://input'), true);
+        
+        if (!isset($data['name'])) {
+            sendError('Name is required');
+        }
+        
+        $name = $conn->real_escape_string($data['name']);
+        $description = isset($data['description']) ? $conn->real_escape_string($data['description']) : '';
+        $category = isset($data['category']) && in_array($data['category'], ['vehicle', 'map', 'script', 'skin', 'weapon', 'misc']) ? $data['category'] : 'misc';
+        $type = isset($data['type']) && in_array($data['type'], ['free', 'paid']) ? $data['type'] : 'free';
+        $price = isset($data['price']) ? floatval($data['price']) : 0.00;
+        $download_link = isset($data['download_link']) ? $conn->real_escape_string($data['download_link']) : '';
+        $preview_image = isset($data['preview_image']) ? $conn->real_escape_string($data['preview_image']) : '';
+        $images = isset($data['images']) ? json_encode($data['images']) : null;
+        $author = isset($data['author']) ? $conn->real_escape_string($data['author']) : 'Unknown';
+        $author_link = isset($data['author_link']) ? $conn->real_escape_string($data['author_link']) : '';
+        
+        $stmt = $conn->prepare("INSERT INTO mods (name, description, category, type, price, download_link, preview_image, images, author, author_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("ssssdsssss", $name, $description, $category, $type, $price, $download_link, $preview_image, $images, $author, $author_link);
+        
+        if ($stmt->execute()) {
+            $modId = $stmt->insert_id;
+            sendResponse(['success' => true, 'message' => 'Mod created successfully', 'id' => $modId], 201);
+        } else {
+            sendError('Failed to create mod: ' . $stmt->error);
+        }
+        break;
+        
+    case 'PUT':
+        // Update mod
+        $data = json_decode(file_get_contents('php://input'), true);
+        
+        if (!isset($data['id'])) {
+            sendError('Mod ID is required');
+        }
+        
+        $id = intval($data['id']);
+        $updates = [];
+        $params = [];
+        $types = "";
+        
+        $fields = ['name', 'description', 'download_link', 'preview_image', 'author', 'author_link'];
+        foreach ($fields as $field) {
+            if (isset($data[$field])) {
+                $updates[] = "$field = ?";
+                $params[] = $data[$field];
+                $types .= "s";
+            }
+        }
+        
+        if (isset($data['category']) && in_array($data['category'], ['vehicle', 'map', 'script', 'skin', 'weapon', 'misc'])) {
+            $updates[] = "category = ?";
+            $params[] = $data['category'];
+            $types .= "s";
+        }
+        
+        if (isset($data['type']) && in_array($data['type'], ['free', 'paid'])) {
+            $updates[] = "type = ?";
+            $params[] = $data['type'];
+            $types .= "s";
+        }
+        
+        if (isset($data['price'])) {
+            $updates[] = "price = ?";
+            $params[] = floatval($data['price']);
+            $types .= "d";
+        }
+        
+        if (isset($data['images'])) {
+            $updates[] = "images = ?";
+            $params[] = json_encode($data['images']);
+            $types .= "s";
+        }
+        
+        if (isset($data['is_featured'])) {
+            $updates[] = "is_featured = ?";
+            $params[] = $data['is_featured'] ? 1 : 0;
+            $types .= "i";
+        }
+        
+        if (empty($updates)) {
+            sendError('No fields to update');
+        }
+        
+        $params[] = $id;
+        $types .= "i";
+        
+        $sql = "UPDATE mods SET " . implode(", ", $updates) . " WHERE id = ?";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        
+        if ($stmt->execute()) {
+            sendResponse(['success' => true, 'message' => 'Mod updated successfully']);
+        } else {
+            sendError('Failed to update mod: ' . $stmt->error);
+        }
+        break;
+        
+    case 'DELETE':
+        // Delete mod
+        $id = isset($_GET['id']) ? intval($_GET['id']) : 0;
+        
+        if (!$id) {
+            sendError('Mod ID is required');
+        }
+        
+        $stmt = $conn->prepare("DELETE FROM mods WHERE id = ?");
+        $stmt->bind_param("i", $id);
+        
+        if ($stmt->execute()) {
+            sendResponse(['success' => true, 'message' => 'Mod deleted successfully']);
+        } else {
+            sendError('Failed to delete mod: ' . $stmt->error);
+        }
+        break;
+        
+    default:
+        sendError('Method not allowed', 405);
+}
+
+$conn->close();
+?>

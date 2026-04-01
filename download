@@ -1,0 +1,184 @@
+-- ============================================
+-- ARMAX - FiveM Servers Platform
+-- Database Schema
+-- ============================================
+
+CREATE DATABASE IF NOT EXISTS armax_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE armax_db;
+
+-- ============================================
+-- SERVERS TABLE
+-- ============================================
+CREATE TABLE IF NOT EXISTS servers (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    ip_address VARCHAR(100) NOT NULL,
+    port INT DEFAULT 30120,
+    discord_link VARCHAR(255),
+    website VARCHAR(255),
+    banner_image VARCHAR(255),
+    icon_image VARCHAR(255),
+    server_type ENUM('esx', 'vrp', 'cfx', 'other') DEFAULT 'other',
+    category VARCHAR(100),
+    max_players INT DEFAULT 64,
+    current_players INT DEFAULT 0,
+    status ENUM('online', 'offline', 'maintenance') DEFAULT 'offline',
+    rating DECIMAL(2,1) DEFAULT 5.0,
+    rating_count INT DEFAULT 0,
+    votes INT DEFAULT 0,
+    is_featured BOOLEAN DEFAULT FALSE,
+    is_premium BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT,
+    INDEX idx_server_type (server_type),
+    INDEX idx_status (status),
+    INDEX idx_rating (rating),
+    INDEX idx_featured (is_featured)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- SERVER RATINGS TABLE
+-- ============================================
+CREATE TABLE IF NOT EXISTS server_ratings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    server_id INT NOT NULL,
+    user_id INT,
+    user_ip VARCHAR(45),
+    rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    comment TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_rating (server_id, user_ip)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- SERVER REVIEWS/FEEDBACK TABLE
+-- ============================================
+CREATE TABLE IF NOT EXISTS server_reviews (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    server_id INT NOT NULL,
+    user_name VARCHAR(100),
+    user_email VARCHAR(255),
+    review_type ENUM('suggestion', 'complaint', 'review', 'bug') DEFAULT 'review',
+    title VARCHAR(255),
+    content TEXT NOT NULL,
+    rating INT,
+    status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- MODS TABLE
+-- ============================================
+CREATE TABLE IF NOT EXISTS mods (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    category ENUM('vehicle', 'map', 'script', 'skin', 'weapon', 'misc') DEFAULT 'misc',
+    type ENUM('free', 'paid') DEFAULT 'free',
+    price DECIMAL(10,2) DEFAULT 0.00,
+    download_link VARCHAR(255),
+    preview_image VARCHAR(255),
+    images JSON,
+    author VARCHAR(100),
+    author_link VARCHAR(255),
+    downloads INT DEFAULT 0,
+    rating DECIMAL(2,1) DEFAULT 5.0,
+    rating_count INT DEFAULT 0,
+    is_featured BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_category (category),
+    INDEX idx_type (type),
+    INDEX idx_featured (is_featured)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- USERS TABLE (for admin panel)
+-- ============================================
+CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(100) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    role ENUM('admin', 'moderator', 'user') DEFAULT 'user',
+    avatar VARCHAR(255),
+    is_active BOOLEAN DEFAULT TRUE,
+    last_login TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- SUGGESTIONS/CONTACT TABLE
+-- ============================================
+CREATE TABLE IF NOT EXISTS suggestions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    type ENUM('suggestion', 'complaint', 'partnership', 'other') DEFAULT 'suggestion',
+    subject VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    status ENUM('new', 'read', 'replied', 'closed') DEFAULT 'new',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    replied_at TIMESTAMP NULL,
+    replied_by INT,
+    reply_text TEXT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- SERVER VOTES TABLE (for voting system)
+-- ============================================
+CREATE TABLE IF NOT EXISTS server_votes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    server_id INT NOT NULL,
+    user_ip VARCHAR(45) NOT NULL,
+    voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_vote (server_id, user_ip, DATE(voted_at))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- INSERT SAMPLE DATA
+-- ============================================
+
+-- Sample Servers
+INSERT INTO servers (name, description, ip_address, discord_link, server_type, category, max_players, current_players, status, rating, is_featured) VALUES
+('سيرفر الاحلام', 'أفضل سيرفر عربي للعب الأدوار مع نظام ESX متكامل واقتصاد واقعي', '192.168.1.100', 'https://discord.gg/dreams', 'esx', 'RP', 128, 85, 'online', 4.8, TRUE),
+('سيرفر الواقع', 'سيرفر واقعي 100% مع نظام VRP متقدم ووظائف متنوعة', '192.168.1.101', 'https://discord.gg/reality', 'vrp', 'RP', 64, 45, 'online', 4.5, TRUE),
+('سيرفر المغامرات', 'سيرفر مغامرات ومهام مع خريطة مخصصة وسيارات فريدة', '192.168.1.102', 'https://discord.gg/adventure', 'cfx', 'Adventure', 100, 62, 'online', 4.3, FALSE),
+('سيرفر السباقات', 'سيرفر متخصص في السباقات والتحديات مع سيارات رياضية', '192.168.1.103', 'https://discord.gg/racing', 'esx', 'Racing', 80, 30, 'online', 4.0, FALSE),
+('سيرفر الزومبي', 'عالم مفتوح مليء بالزومبي والبقاء على قيد الحياة', '192.168.1.104', 'https://discord.gg/zombie', 'cfx', 'Survival', 50, 0, 'offline', 4.6, TRUE);
+
+-- Sample Mods
+INSERT INTO mods (name, description, category, type, price, author, downloads, rating, is_featured) VALUES
+('سيارة BMW M4 2024', 'سيارة BMW M4 موديل 2024 بتفاصيل عالية الجودة', 'vehicle', 'free', 0.00, 'ArmaxMods', 1250, 4.9, TRUE),
+('خريطة لوس سانتوس المطورة', 'خريطة مطورة مع مباني جديدة ومناطق إضافية', 'map', 'paid', 15.00, 'MapMaster', 850, 4.7, TRUE),
+('نظام البنك المتقدم', 'سكربت بنك متقدم مع نظام اقتصادي كامل', 'script', 'paid', 25.00, 'ScriptPro', 2100, 4.8, TRUE),
+('سكنات الشرطة', 'مجموعة سكنات شرطة عالية الجودة', 'skin', 'free', 0.00, 'SkinMaker', 3200, 4.5, FALSE),
+('أسلحة واقعية', 'حزمة أسلحة واقعية مع أصوات محسنة', 'weapon', 'paid', 10.00, 'WeaponMod', 1800, 4.6, FALSE);
+
+-- Default Admin User (password: admin123)
+INSERT INTO users (username, email, password_hash, role) VALUES
+('admin', 'admin@armax.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin');
+
+-- ============================================
+-- CREATE VIEWS
+-- ============================================
+CREATE OR REPLACE VIEW server_stats AS
+SELECT 
+    COUNT(*) as total_servers,
+    SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END) as online_servers,
+    SUM(current_players) as total_players,
+    SUM(max_players) as max_capacity,
+    AVG(rating) as average_rating
+FROM servers;
+
+CREATE OR REPLACE VIEW top_servers AS
+SELECT * FROM servers 
+WHERE status = 'online' 
+ORDER BY votes DESC, rating DESC 
+LIMIT 10;

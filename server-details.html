@@ -1,0 +1,149 @@
+<?php
+/**
+ * ARMAX - Suggestions & Contact API
+ * Handle user suggestions, complaints, and contact messages
+ */
+
+require_once 'config.php';
+
+$method = $_SERVER['REQUEST_METHOD'];
+$conn = getDBConnection();
+
+switch ($method) {
+    case 'GET':
+        // Get suggestions (admin only)
+        $status = isset($_GET['status']) ? $_GET['status'] : '';
+        $type = isset($_GET['type']) ? $_GET['type'] : '';
+        
+        $where = ["1=1"];
+        $params = [];
+        $types = "";
+        
+        if ($status && in_array($status, ['new', 'read', 'replied', 'closed'])) {
+            $where[] = "status = ?";
+            $params[] = $status;
+            $types .= "s";
+        }
+        
+        if ($type && in_array($type, ['suggestion', 'complaint', 'partnership', 'other'])) {
+            $where[] = "type = ?";
+            $params[] = $type;
+            $types .= "s";
+        }
+        
+        $limit = isset($_GET['limit']) ? intval($_GET['limit']) : 20;
+        $offset = isset($_GET['offset']) ? intval($_GET['offset']) : 0;
+        
+        $sql = "SELECT * FROM suggestions WHERE " . implode(" AND ", $where) . " ORDER BY created_at DESC LIMIT ? OFFSET ?";
+        $params[] = $limit;
+        $params[] = $offset;
+        $types .= "ii";
+        
+        $stmt = $conn->prepare($sql);
+        if (!empty($params)) {
+            $stmt->bind_param($types, ...$params);
+        }
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $suggestions = $result->fetch_all(MYSQLI_ASSOC);
+        
+        sendResponse(['success' => true, 'data' => $suggestions]);
+        break;
+        
+    case 'POST':
+        $data = json_decode(file_get_contents('php://input'), true);
+        
+        // Validate required fields
+        if (!isset($data['name']) || !isset($data['email']) || !isset($data['subject']) || !isset($data['message'])) {
+            sendError('Name, email, subject, and message are required');
+        }
+        
+        $name = $conn->real_escape_string($data['name']);
+        $email = $conn->real_escape_string($data['email']);
+        $type = isset($data['type']) && in_array($data['type'], ['suggestion', 'complaint', 'partnership', 'other']) ? $data['type'] : 'other';
+        $subject = $conn->real_escape_string($data['subject']);
+        $message = $conn->real_escape_string($data['message']);
+        
+        // Validate email
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            sendError('Invalid email address');
+        }
+        
+        $stmt = $conn->prepare("INSERT INTO suggestions (name, email, type, subject, message) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param("sssss", $name, $email, $type, $subject, $message);
+        
+        if ($stmt->execute()) {
+            sendResponse(['success' => true, 'message' => 'Message sent successfully. We will get back to you soon!']);
+        } else {
+            sendError('Failed to send message: ' . $stmt->error);
+        }
+        break;
+        
+    case 'PUT':
+        // Update suggestion status (admin only)
+        $data = json_decode(file_get_contents('php://input'), true);
+        
+        if (!isset($data['id'])) {
+            sendError('Suggestion ID is required');
+        }
+        
+        $id = intval($data['id']);
+        $updates = [];
+        $params = [];
+        $types = "";
+        
+        if (isset($data['status']) && in_array($data['status'], ['new', 'read', 'replied', 'closed'])) {
+            $updates[] = "status = ?";
+            $params[] = $data['status'];
+            $types .= "s";
+        }
+        
+        if (isset($data['reply_text'])) {
+            $updates[] = "reply_text = ?";
+            $updates[] = "replied_at = NOW()";
+            $params[] = $conn->real_escape_string($data['reply_text']);
+            $types .= "s";
+        }
+        
+        if (empty($updates)) {
+            sendError('No fields to update');
+        }
+        
+        $params[] = $id;
+        $types .= "i";
+        
+        $sql = "UPDATE suggestions SET " . implode(", ", $updates) . " WHERE id = ?";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        
+        if ($stmt->execute()) {
+            sendResponse(['success' => true, 'message' => 'Suggestion updated successfully']);
+        } else {
+            sendError('Failed to update suggestion: ' . $stmt->error);
+        }
+        break;
+        
+    case 'DELETE':
+        // Delete suggestion (admin only)
+        $id = isset($_GET['id']) ? intval($_GET['id']) : 0;
+        
+        if (!$id) {
+            sendError('Suggestion ID is required');
+        }
+        
+        $stmt = $conn->prepare("DELETE FROM suggestions WHERE id = ?");
+        $stmt->bind_param("i", $id);
+        
+        if ($stmt->execute()) {
+            sendResponse(['success' => true, 'message' => 'Suggestion deleted successfully']);
+        } else {
+            sendError('Failed to delete suggestion: ' . $stmt->error);
+        }
+        break;
+        
+    default:
+        sendError('Method not allowed', 405);
+}
+
+$conn->close();
+?>

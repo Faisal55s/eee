@@ -1,0 +1,175 @@
+<?php
+/**
+ * ARMAX - Ratings & Reviews API
+ * Add ratings, reviews, and votes for servers
+ */
+
+require_once 'config.php';
+
+$method = $_SERVER['REQUEST_METHOD'];
+$conn = getDBConnection();
+
+switch ($method) {
+    case 'GET':
+        // Get ratings for a server
+        if (!isset($_GET['server_id'])) {
+            sendError('Server ID is required');
+        }
+        
+        $serverId = intval($_GET['server_id']);
+        $limit = isset($_GET['limit']) ? intval($_GET['limit']) : 10;
+        $offset = isset($_GET['offset']) ? intval($_GET['offset']) : 0;
+        
+        // Get ratings with comments
+        $stmt = $conn->prepare("SELECT * FROM server_ratings WHERE server_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?");
+        $stmt->bind_param("iii", $serverId, $limit, $offset);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $ratings = $result->fetch_all(MYSQLI_ASSOC);
+        
+        // Get rating stats
+        $statsStmt = $conn->prepare("SELECT 
+            AVG(rating) as average_rating,
+            COUNT(*) as total_ratings,
+            COUNT(CASE WHEN rating = 5 THEN 1 END) as five_star,
+            COUNT(CASE WHEN rating = 4 THEN 1 END) as four_star,
+            COUNT(CASE WHEN rating = 3 THEN 1 END) as three_star,
+            COUNT(CASE WHEN rating = 2 THEN 1 END) as two_star,
+            COUNT(CASE WHEN rating = 1 THEN 1 END) as one_star
+            FROM server_ratings WHERE server_id = ?");
+        $statsStmt->bind_param("i", $serverId);
+        $statsStmt->execute();
+        $statsResult = $statsStmt->get_result();
+        $stats = $statsResult->fetch_assoc();
+        
+        sendResponse([
+            'success' => true,
+            'data' => $ratings,
+            'stats' => $stats
+        ]);
+        break;
+        
+    case 'POST':
+        $data = json_decode(file_get_contents('php://input'), true);
+        $action = isset($data['action']) ? $data['action'] : '';
+        
+        switch ($action) {
+            case 'rate':
+                // Add or update rating
+                if (!isset($data['server_id']) || !isset($data['rating'])) {
+                    sendError('Server ID and rating are required');
+                }
+                
+                $serverId = intval($data['server_id']);
+                $rating = intval($data['rating']);
+                $comment = isset($data['comment']) ? $conn->real_escape_string($data['comment']) : '';
+                $userIp = $_SERVER['REMOTE_ADDR'];
+                
+                if ($rating < 1 || $rating > 5) {
+                    sendError('Rating must be between 1 and 5');
+                }
+                
+                // Check if user already rated
+                $checkStmt = $conn->prepare("SELECT id FROM server_ratings WHERE server_id = ? AND user_ip = ?");
+                $checkStmt->bind_param("is", $serverId, $userIp);
+                $checkStmt->execute();
+                $checkResult = $checkStmt->get_result();
+                
+                if ($checkResult->num_rows > 0) {
+                    // Update existing rating
+                    $updateStmt = $conn->prepare("UPDATE server_ratings SET rating = ?, comment = ? WHERE server_id = ? AND user_ip = ?");
+                    $updateStmt->bind_param("isis", $rating, $comment, $serverId, $userIp);
+                    $updateStmt->execute();
+                } else {
+                    // Insert new rating
+                    $insertStmt = $conn->prepare("INSERT INTO server_ratings (server_id, user_ip, rating, comment) VALUES (?, ?, ?, ?)");
+                    $insertStmt->bind_param("isis", $serverId, $userIp, $rating, $comment);
+                    $insertStmt->execute();
+                }
+                
+                // Update server rating
+                updateServerRating($conn, $serverId);
+                
+                sendResponse(['success' => true, 'message' => 'Rating submitted successfully']);
+                break;
+                
+            case 'vote':
+                // Vote for server
+                if (!isset($data['server_id'])) {
+                    sendError('Server ID is required');
+                }
+                
+                $serverId = intval($data['server_id']);
+                $userIp = $_SERVER['REMOTE_ADDR'];
+                
+                // Check if user already voted today
+                $checkStmt = $conn->prepare("SELECT id FROM server_votes WHERE server_id = ? AND user_ip = ? AND DATE(voted_at) = CURDATE()");
+                $checkStmt->bind_param("is", $serverId, $userIp);
+                $checkStmt->execute();
+                $checkResult = $checkStmt->get_result();
+                
+                if ($checkResult->num_rows > 0) {
+                    sendError('You have already voted for this server today');
+                }
+                
+                // Insert vote
+                $voteStmt = $conn->prepare("INSERT INTO server_votes (server_id, user_ip) VALUES (?, ?)");
+                $voteStmt->bind_param("is", $serverId, $userIp);
+                $voteStmt->execute();
+                
+                // Update server votes count
+                $updateStmt = $conn->prepare("UPDATE servers SET votes = votes + 1 WHERE id = ?");
+                $updateStmt->bind_param("i", $serverId);
+                $updateStmt->execute();
+                
+                sendResponse(['success' => true, 'message' => 'Vote submitted successfully']);
+                break;
+                
+            case 'review':
+                // Submit review/feedback
+                if (!isset($data['server_id']) || !isset($data['content'])) {
+                    sendError('Server ID and content are required');
+                }
+                
+                $serverId = intval($data['server_id']);
+                $userName = isset($data['user_name']) ? $conn->real_escape_string($data['user_name']) : 'Anonymous';
+                $userEmail = isset($data['user_email']) ? $conn->real_escape_string($data['user_email']) : '';
+                $reviewType = isset($data['review_type']) && in_array($data['review_type'], ['suggestion', 'complaint', 'review', 'bug']) ? $data['review_type'] : 'review';
+                $title = isset($data['title']) ? $conn->real_escape_string($data['title']) : '';
+                $content = $conn->real_escape_string($data['content']);
+                $rating = isset($data['rating']) ? intval($data['rating']) : null;
+                
+                $stmt = $conn->prepare("INSERT INTO server_reviews (server_id, user_name, user_email, review_type, title, content, rating) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("isssssi", $serverId, $userName, $userEmail, $reviewType, $title, $content, $rating);
+                
+                if ($stmt->execute()) {
+                    sendResponse(['success' => true, 'message' => 'Review submitted successfully and pending approval']);
+                } else {
+                    sendError('Failed to submit review: ' . $stmt->error);
+                }
+                break;
+                
+            default:
+                sendError('Invalid action');
+        }
+        break;
+        
+    default:
+        sendError('Method not allowed', 405);
+}
+
+// Helper function to update server rating
+function updateServerRating($conn, $serverId) {
+    $stmt = $conn->prepare("SELECT AVG(rating) as avg_rating, COUNT(*) as count FROM server_ratings WHERE server_id = ?");
+    $stmt->bind_param("i", $serverId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $data = $result->fetch_assoc();
+    
+    $updateStmt = $conn->prepare("UPDATE servers SET rating = ?, rating_count = ? WHERE id = ?");
+    $updateStmt->bind_param("dii", $data['avg_rating'], $data['count'], $serverId);
+    $updateStmt->execute();
+}
+
+$conn->close();
+?>
